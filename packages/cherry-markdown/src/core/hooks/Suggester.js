@@ -516,7 +516,6 @@ class SuggesterPanel {
     // 需要从编辑器实例获取光标位置，而不是通过 DOM 查询
     const editorView = this.editor?.editor?.view;
     if (!editorView) {
-      console.log('[Suggester] No editor view found');
       this.$suggesterPanel.style.display = 'none';
       return false;
     }
