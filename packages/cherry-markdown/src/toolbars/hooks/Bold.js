@@ -48,7 +48,6 @@ export default class Bold extends MenuBase {
    * @param {string} shortKey 快捷键参数，本函数不处理这个参数
    * @returns {string} 回填到编辑器光标位置/选中文本区域的内容
    */
-  // eslint-disable-next-line no-unused-vars
   onClick(selection, shortKey = '') {
     let $selection = this.getSelection(selection) || this.locale.bold;
     // 如果是单选，并且选中内容的开始结束内没有加粗语法，则扩大选中范围
