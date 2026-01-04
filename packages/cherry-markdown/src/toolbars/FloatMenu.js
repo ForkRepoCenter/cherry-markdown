@@ -156,7 +156,6 @@ export default class FloatMenu extends Toolbar {
    * 隐藏浮动菜单
    */
   hideFloatMenu() {
-    console.log('hideFloatMenu');
     if (this.options.dom) {
       this.options.dom.style.display = 'none';
     }
