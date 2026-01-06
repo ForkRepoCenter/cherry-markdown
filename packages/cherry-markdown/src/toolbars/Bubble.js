@@ -101,13 +101,7 @@ export default class Bubble extends Toolbar {
       this.bubbleDom.style.marginTop = '0';
       this.bubbleDom.dataset.scrollTop = String(this.getScrollTop());
     }
-    // 安全获取 .cm-lineWrapping 及其子元素
-    const lineWrapping = this.editorDom.querySelector('.cm-lineWrapping');
-    if (!lineWrapping || !lineWrapping.firstChild) {
-      this.hideBubble();
-      return;
-    }
-    const positionLimit = lineWrapping.firstChild.getBoundingClientRect();
+    const positionLimit = this.editorDom.querySelector('.cm-lineWrapping').firstChild.getBoundingClientRect();
     const editorPosition = this.editorDom.getBoundingClientRect();
     const minLeft = positionLimit.left - editorPosition.left;
     const maxLeft = positionLimit.width + minLeft;

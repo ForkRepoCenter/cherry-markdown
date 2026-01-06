@@ -405,81 +405,31 @@ export default class SearchBox {
   }
 
   replaceAll() {
+    let value;
+    let cursor;
     const { cm } = this;
     const from = this.searchInput.value;
     const to = this.replaceInput.value;
+    let reg = RegExp(from, this.caseSensitiveOption.checked ? 'g' : 'gi');
 
-    if (!from) {
-      this.updateCount();
-      return;
-    }
-
-    // 构建搜索正则表达式
-    let searchStr = from;
-    if (!this.regExpOption.checked) {
-      // 转义正则特殊字符
-      // eslint-disable-next-line no-useless-escape
-      searchStr = from.replace(/[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g, '\\$&');
-    }
-    if (this.wholeWordOption.checked) {
-      searchStr = `\\b${searchStr}\\b`;
-    }
-
-    const flags = this.caseSensitiveOption.checked ? 'g' : 'gi';
-    let reg;
-    try {
-      reg = new RegExp(searchStr, flags);
-    } catch (e) {
-      console.warn('Invalid regex:', e);
-      this.updateCount();
-      return;
+    if (this.wholeWordOption.checked && !this.regExpOption.checked) {
+      if (this.caseSensitiveOption.checked) {
+        reg = RegExp(`\\b${from}\\b`, 'g');
+      } else {
+        reg = RegExp(`\\b${from}\\b`, 'gi');
+      }
     }
 
     // CodeMirror 6: 使用 getOption 检查编辑器的可编辑状态
     const readOnly = cm.getOption ? cm.getOption('readOnly') : !cm.view?.contentDOM?.isContentEditable;
-    if (readOnly) {
-      this.updateCount();
-      return;
+    if (!readOnly && cm.getSelection()) {
+      cursor = cm.getCursor();
+      value = cm.getValue();
+      value = value.replace(reg, to);
+
+      cm.setValue(value);
+      cm.setCursor(cursor);
     }
-
-    // CodeMirror 6: 使用事务批量替换，保持位置正确性
-    const { view } = cm;
-    if (!view) {
-      this.updateCount();
-      return;
-    }
-
-    const { doc } = view.state;
-    const text = doc.toString();
-    const changes = [];
-
-    // 收集所有匹配的位置
-    let match;
-    reg.lastIndex = 0;
-    while ((match = reg.exec(text)) !== null) {
-      changes.push({
-        from: match.index,
-        to: match.index + match[0].length,
-        insert: to,
-      });
-      // 防止无限循环（当匹配空字符串时）
-      if (match[0].length === 0) {
-        reg.lastIndex += 1;
-      }
-    }
-
-    if (changes.length > 0) {
-      // 保存当前光标位置
-      const cursorPos = view.state.selection.main.head;
-
-      // 使用单个事务执行所有替换
-      view.dispatch({
-        changes,
-        // 使用 mapPos 计算替换后的光标位置
-        selection: { anchor: Math.min(cursorPos, doc.length) },
-      });
-    }
-
     this.updateCount();
   }
 

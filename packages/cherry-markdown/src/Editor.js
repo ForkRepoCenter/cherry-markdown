@@ -280,8 +280,6 @@ class CM6Adapter {
 
   /**
    * 分发事务到编辑器
-   * 直接透传到 EditorView.dispatch，支持多种调用方式
-   * @see https://codemirror.net/docs/ref/#view.EditorView.dispatch
    * @param {...import('@codemirror/state').TransactionSpec} specs - 事务规范
    * @returns {void}
    */
@@ -290,9 +288,9 @@ class CM6Adapter {
   }
 
   /**
-   * 请求测量 - 直接透传到 EditorView.requestMeasure
-   * @see https://codemirror.net/docs/ref/#view.EditorView.requestMeasure
-   * @param {object} [request] - 测量请求对象
+   * 请求测量
+   * @template T
+   * @param {{ read: (view: EditorView) => T; write?: (measure: T, view: EditorView) => void }} [request] - 测量请求
    * @returns {void}
    */
   requestMeasure(request) {
@@ -300,20 +298,17 @@ class CM6Adapter {
   }
 
   /**
-   * 坐标转位置 - 直接透传到 EditorView.posAtCoords
-   * @see https://codemirror.net/docs/ref/#view.EditorView.posAtCoords
-   * @param {{ x: number; y: number }} coords - 屏幕坐标
-   * @param {false} [precise] - 是否精确匹配
+   * 坐标转位置
+   * @param {{ x: number; y: number }} coords - 坐标
    * @returns {number | null}
    */
-  posAtCoords(coords, precise) {
-    return this.view.posAtCoords(coords, precise);
+  posAtCoords(coords) {
+    return this.view.posAtCoords(coords);
   }
 
   /**
-   * 获取行块信息 - 直接透传到 EditorView.lineBlockAt
-   * @see https://codemirror.net/docs/ref/#view.EditorView.lineBlockAt
-   * @param {number} pos - 文档位置
+   * 获取行块信息
+   * @param {number} pos - 位置
    * @returns {import('@codemirror/view').BlockInfo}
    */
   lineBlockAt(pos) {
@@ -947,11 +942,11 @@ class CM6Adapter {
     const handlers = this.eventHandlers.get(event);
     if (handlers) {
       // 特殊处理 change 事件
-      if (event === 'change' && args.length > 0) {
+      if (event === 'change' && args[0]) {
         /** @type {import('@codemirror/view').ViewUpdate} */
         const update = /** @type {import('@codemirror/view').ViewUpdate} */ (args[0]);
-        if (update && update.changes) {
-          update.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+        if (update.changes) {
+          update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
             // 获取事件来源
             let origin;
             if (update.transactions.length > 0) {
@@ -975,10 +970,10 @@ class CM6Adapter {
 
             handlers.forEach((handler) => handler(this, changeObj));
           });
-          return;
         }
+      } else {
+        handlers.forEach((handler) => handler(this, ...args));
       }
-      handlers.forEach((handler) => handler(this, ...args));
     }
   }
 }
@@ -1592,32 +1587,32 @@ export default class Editor {
 
       // DOM 事件处理
       EditorView.domEventHandlers({
-        keydown: () => {
-          if (this.editor) this.editor.emit('keydown', event);
+        keydown: (e) => {
+          if (this.editor) this.editor.emit('keydown', e);
           return false;
         },
-        keyup: () => {
-          if (this.editor) this.editor.emit('keyup', event);
+        keyup: (e) => {
+          if (this.editor) this.editor.emit('keyup', e);
           return false;
         },
-        mousedown: () => {
-          if (this.editor) this.editor.emit('mousedown', event);
+        mousedown: (e) => {
+          if (this.editor) this.editor.emit('mousedown', e);
           return false;
         },
-        paste: () => {
-          if (this.editor) this.editor.emit('paste', event);
+        paste: (e) => {
+          if (this.editor) this.editor.emit('paste', e);
           return false;
         },
-        drop: () => {
-          if (this.editor) this.editor.emit('drop', event);
+        drop: (e) => {
+          if (this.editor) this.editor.emit('drop', e);
           return false;
         },
-        focus: () => {
-          if (this.editor) this.editor.emit('focus', event);
+        focus: (e) => {
+          if (this.editor) this.editor.emit('focus', e);
           return false;
         },
-        blur: () => {
-          if (this.editor) this.editor.emit('blur', event);
+        blur: (e) => {
+          if (this.editor) this.editor.emit('blur', e);
           return false;
         },
         scroll: () => {
@@ -1648,13 +1643,13 @@ export default class Editor {
     this.editor = editor;
 
     // 绑定事件监听器
-    editor.on('blur', (/** @type {Event} */ evt) => {
-      this.options.onBlur(/** @type {import('@codemirror/view').ViewUpdate} */ (/** @type {unknown} */ (evt)), editor);
+    editor.on('blur', (evt) => {
+      this.options.onBlur(/** @type {Event} */ (evt), editor);
       this.$cherry.$event.emit('blur', { evt, cherry: this.$cherry });
     });
 
-    editor.on('focus', (/** @type {Event} */ evt) => {
-      this.options.onFocus(/** @type {import('@codemirror/view').ViewUpdate} */ (/** @type {unknown} */ (evt)), editor);
+    editor.on('focus', (evt) => {
+      this.options.onFocus(/** @type {Event} */ (evt), editor);
       this.$cherry.$event.emit('focus', { evt, cherry: this.$cherry });
     });
 
@@ -1672,16 +1667,16 @@ export default class Editor {
       this.onScroll(editor.view);
     });
 
-    editor.on('paste', (/** @type {ClipboardEvent} */ event) => {
-      this.onPaste(event, editor);
+    editor.on('paste', (evt) => {
+      this.onPaste(/** @type {ClipboardEvent} */ (evt), editor);
     });
 
-    editor.on('mousedown', (/** @type {MouseEvent} */ event) => {
-      this.onMouseDown(view, event);
+    editor.on('mousedown', (evt) => {
+      this.onMouseDown(view, /** @type {MouseEvent} */ (evt));
     });
 
-    editor.on('keyup', (/** @type {KeyboardEvent} */ event) => {
-      this.onKeyup(event, view);
+    editor.on('keyup', (evt) => {
+      this.onKeyup(/** @type {KeyboardEvent} */ (evt), view);
     });
 
     editor.on('cursorActivity', () => {

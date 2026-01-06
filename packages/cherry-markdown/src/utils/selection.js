@@ -72,16 +72,10 @@ export function getSelection(view, selection, type = 'word', focus = false) {
       }
 
       // 如果没有选中内容，选中当前光标所在行
-      // 安全处理：确保 pos 在有效范围内，避免 doc.length - 1 为负数
-      const pos = doc.length > 0 ? Math.max(0, Math.min(range.head, doc.length - 1)) : 0;
+      const pos = Math.max(0, Math.min(range.head, doc.length - 1));
 
-      // 如果文档为空，返回空字符串
-      if (doc.length === 0) {
-        return '';
-      }
-
-      // 如果文档只有一个字符，直接返回整个文档
-      if (doc.length === 1) {
+      // 如果文档为空或只有一个字符，直接返回整个文档
+      if (doc.length <= 1) {
         return doc.toString();
       }
 
@@ -102,16 +96,10 @@ export function getSelection(view, selection, type = 'word', focus = false) {
   // 获取光标所在单词的内容，同时选中所在单词
   if (type === 'word') {
     try {
-      // 安全处理：确保 pos 在有效范围内，避免 doc.length - 1 为负数
-      const pos = doc.length > 0 ? Math.max(0, Math.min(range.head, doc.length - 1)) : 0;
+      const pos = Math.max(0, Math.min(range.head, doc.length - 1));
 
-      // 如果文档为空，返回空字符串
-      if (doc.length === 0) {
-        return '';
-      }
-
-      // 如果文档只有一个字符，直接返回整个文档
-      if (doc.length === 1) {
+      // 如果文档为空或只有一个字符，直接返回
+      if (doc.length <= 1) {
         return doc.toString();
       }
 

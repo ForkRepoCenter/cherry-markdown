@@ -143,31 +143,15 @@ export default class ListHandler {
       return; // 行号超出范围
     }
 
-    // 重新获取最新的文档状态，防止并发编辑导致的越界
-    const currentDoc = this.editor.editor.view.state.doc;
-
-    // 再次验证行号有效性（文档可能已被修改）
-    if (lineNumber > currentDoc.lines) {
-      return;
-    }
-
-    const targetLineObj = currentDoc.line(lineNumber);
-    const fromPos = targetLineObj.from + Math.min(targetCh, targetLineObj.length);
+    const fromPos = doc.line(lineNumber).from + targetCh;
     const toLineEnd = targetLine + targetContent.length;
 
     // 确保结束行号也在有效范围内
-    if (toLineEnd < 1 || toLineEnd > currentDoc.lines) {
+    if (toLineEnd < 1 || toLineEnd > doc.lines) {
       return; // 结束行号超出范围
     }
 
-    const toLineObj = currentDoc.line(toLineEnd);
-    const lastContentLength = targetContent[targetContent.length - 1]?.length || 0;
-    const toPos = toLineObj.from + Math.min(targetCh + lastContentLength, toLineObj.length);
-
-    // 最终验证位置有效性
-    if (fromPos < 0 || toPos < 0 || fromPos > currentDoc.length || toPos > currentDoc.length) {
-      return;
-    }
+    const toPos = doc.line(toLineEnd).from + targetCh + (targetContent[targetContent.length - 1]?.length || 0);
 
     this.editor.editor.view.dispatch({
       selection: { anchor: fromPos, head: toPos },
@@ -244,9 +228,7 @@ export default class ListHandler {
     let insertContent = '\n- ';
     if (regRes !== null) {
       // 存在选中的checkbox则替换为未选中的checkbox，其他的保持原样
-      // 安全处理 regRes[2] 可能为 undefined 的情况
-      const identifier = regRes[2] || '';
-      insertContent = `\n${regRes[1]}${identifier.replace('[x]', '[ ] ')}`;
+      insertContent = `\n${regRes[1]}${regRes[2]?.replace('[x]', '[ ] ')}`;
     }
     insertContent += after?.join('') ?? '';
 
