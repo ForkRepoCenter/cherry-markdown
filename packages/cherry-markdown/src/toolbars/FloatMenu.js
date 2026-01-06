@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import Logger from '@/Logger';
 import Toolbar from './Toolbar';
 /**
  * 当光标处于编辑器新行起始位置时出现的浮动工具栏
@@ -25,7 +26,14 @@ export default class FloatMenu extends Toolbar {
   init() {
     this.editor = this.$cherry.editor;
     this.editorDom = this.editor.getEditorDom();
-    this.editorDom.querySelector('.cm-scroller').appendChild(this.options.dom);
+    // 添加空值检查，确保 .cm-scroller 存在
+    const cmScroller = this.editorDom.querySelector('.cm-scroller');
+    if (cmScroller) {
+      cmScroller.appendChild(this.options.dom);
+    } else {
+      Logger.warn('FloatMenu: .cm-scroller not found, appending to editorDom instead');
+      this.editorDom.appendChild(this.options.dom);
+    }
     this.initAction();
     Object.entries(this.shortcutKeyMap).forEach(([key, value]) => {
       this.$cherry.toolbar.shortcutKeyMap[key] = value;
@@ -37,119 +45,61 @@ export default class FloatMenu extends Toolbar {
   }
 
   initAction() {
+    // 保存绑定后的事件处理函数引用，以便正确移除
+    this.boundHandleSelectionChange = (event) => this.handleSelectionChange(event);
+    this.boundHandleContentChange = () => this.handleContentChange();
+    this.boundHandleBeforeSelectionChange = (event) => this.handleBeforeSelectionChange(event);
+    this.boundHideFloatMenu = () => this.hideFloatMenu();
+
     // 监听选区变化事件
-    this.$cherry.$event.on('selectionChange', (event) => {
-      this.handleSelectionChange(event);
-    });
+    this.$cherry.$event.on('selectionChange', this.boundHandleSelectionChange);
 
     // 监听编辑器内容变化事件
-    this.$cherry.$event.on('afterChange', () => {
-      this.handleContentChange();
-    });
+    this.$cherry.$event.on('afterChange', this.boundHandleContentChange);
 
     // 监听beforeSelectionChange事件（这个事件在Editor.js中已经触发）
-    this.$cherry.$event.on('beforeSelectionChange', (event) => {
-      this.handleBeforeSelectionChange(event);
-    });
+    this.$cherry.$event.on('beforeSelectionChange', this.boundHandleBeforeSelectionChange);
   }
 
   /**
-   * 处理选区变化
+   * 处理选区变化 - 直接使用 CM6 原生 API
    * @param {Object} event 选区变化事件
    */
   handleSelectionChange(event) {
     if (this.editor && this.editor.editor) {
-      // 创建兼容的 CodeMirror 对象
-      const compatCodeMirror = this.createCompatCodeMirror();
-      this.cursorActivity(null, compatCodeMirror);
+      this.cursorActivity();
     }
   }
 
   /**
-   * 处理内容变化
+   * 处理内容变化 - 直接使用 CM6 原生 API
    */
   handleContentChange() {
     if (this.editor && this.editor.editor) {
-      const compatCodeMirror = this.createCompatCodeMirror();
-      this.cursorActivity(null, compatCodeMirror);
+      this.cursorActivity();
     }
   }
 
   /**
-   * 处理beforeSelectionChange事件
+   * 处理beforeSelectionChange事件 - 直接使用 CM6 原生 API
    * @param {Object} selection 选区对象
    */
   handleBeforeSelectionChange({ selection }) {
     if (this.editor && this.editor.editor) {
-      const compatCodeMirror = this.createCompatCodeMirror();
-      this.cursorActivity(null, compatCodeMirror);
+      this.cursorActivity();
     }
   }
 
   /**
-   * 创建兼容的 CodeMirror 对象
-   * @returns {Object} 兼容的 CodeMirror 对象
+   * 获取 CM6 EditorView 实例
+   * @returns {import('@codemirror/view').EditorView | null}
    */
-  createCompatCodeMirror() {
+  getEditorView() {
     if (!this.editor || !this.editor.editor) {
       return null;
     }
-
     const editorAdapter = this.editor.editor;
-    // 兼容 CM6Adapter,获取真正的 EditorView
-    const view = editorAdapter.view || editorAdapter;
-    const { state } = view;
-    const selection = state.selection.main;
-    const line = state.doc.lineAt(selection.head);
-
-    return {
-      getCursor: () => ({ line: line.number - 1 }),
-      getLine: (lineNum) => {
-        try {
-          return state.doc.line(lineNum + 1).text;
-        } catch (e) {
-          return '';
-        }
-      },
-      getSelections: () => {
-        return state.selection.ranges.map((range) => state.doc.sliceString(range.from, range.to));
-      },
-      getSelection: () => {
-        return state.doc.sliceString(selection.from, selection.to);
-      },
-      getDoc: () => ({
-        eachLine: (start, end, callback) => {
-          for (let i = start; i < end && i < state.doc.lines; i++) {
-            try {
-              const docLine = state.doc.line(i + 1);
-              // 尝试使用 coordsAtPos 获取更精确的行高
-              let lineHeight = 20; // 默认行高
-              try {
-                const startCoords = view.coordsAtPos(docLine.from);
-                const endCoords = view.coordsAtPos(docLine.to);
-                if (startCoords && endCoords) {
-                  lineHeight = Math.max(startCoords.bottom - startCoords.top, 20);
-                }
-              } catch (coordsError) {
-                // 如果 coordsAtPos 失败，使用默认行高
-                console.warn('Failed to get coords for line height:', coordsError);
-              }
-              callback({ height: lineHeight });
-            } catch (e) {
-              break;
-            }
-          }
-        },
-      }),
-      // 添加对 coordsAtPos 的支持
-      coordsAtPos: (pos) => {
-        try {
-          return view.coordsAtPos(pos);
-        } catch (e) {
-          return null;
-        }
-      },
-    };
+    return editorAdapter.view || editorAdapter;
   }
 
   /**
@@ -165,17 +115,29 @@ export default class FloatMenu extends Toolbar {
    * 清理事件监听器
    */
   destroy() {
-    // 移除 Cherry 事件监听
-    this.$cherry.$event.off('selectionChange', this.handleSelectionChange);
-    this.$cherry.$event.off('onChange', this.handleContentChange);
-    this.$cherry.$event.off('cleanAllSubMenus', this.hideFloatMenu);
-    this.$cherry.$event.off('onScroll', this.hideFloatMenu);
-    this.$cherry.$event.off('beforeSelectionChange', this.handleBeforeSelectionChange);
+    // 移除 Cherry 事件监听（使用保存的绑定函数引用）
+    if (this.boundHandleSelectionChange) {
+      this.$cherry.$event.off('selectionChange', this.boundHandleSelectionChange);
+    }
+    if (this.boundHandleContentChange) {
+      this.$cherry.$event.off('afterChange', this.boundHandleContentChange);
+    }
+    if (this.boundHideFloatMenu) {
+      this.$cherry.$event.off('cleanAllSubMenus', this.boundHideFloatMenu);
+      this.$cherry.$event.off('onScroll', this.boundHideFloatMenu);
+    }
+    if (this.boundHandleBeforeSelectionChange) {
+      this.$cherry.$event.off('beforeSelectionChange', this.boundHandleBeforeSelectionChange);
+    }
   }
 
-  update(evt, codeMirror) {
-    const pos = codeMirror.getCursor();
-    if (this.isHidden(pos.line, codeMirror)) {
+  update() {
+    const view = this.getEditorView();
+    if (!view) return false;
+
+    const { state } = view;
+
+    if (this.isHidden(state)) {
       this.options.dom.style.display = 'none';
       return false;
     }
@@ -184,12 +146,16 @@ export default class FloatMenu extends Toolbar {
 
   /**
    * 当光标激活时触发，当光标处于行起始位置时展示float工具栏；反之隐藏
-   * @param {Event} evt
-   * @param {Object} codeMirror 兼容的 CodeMirror 对象
-   * @returns
+   * 直接使用 CM6 原生 API
+   * @returns {boolean | void}
    */
-  cursorActivity(evt, codeMirror) {
-    const pos = codeMirror.getCursor();
+  cursorActivity() {
+    const view = this.getEditorView();
+    if (!view) return false;
+
+    const { state } = view;
+    const lineNumber = state.doc.lineAt(state.selection.main.head).number - 1;
+
     // CM6 使用 .cm-content 作为内容区域
     const codeMirrorLines = document.querySelector('.cherry-editor .cm-content');
     if (!codeMirrorLines || !(codeMirrorLines instanceof HTMLElement)) {
@@ -199,7 +165,7 @@ export default class FloatMenu extends Toolbar {
     const parsedPaddingLeft = Number.parseFloat(computedLinesStyle.paddingLeft);
     const codeWrapPaddingLeft = Number.isFinite(parsedPaddingLeft) ? parsedPaddingLeft : 0;
 
-    if (this.isHidden(pos.line, codeMirror)) {
+    if (this.isHidden(state)) {
       this.options.dom.style.display = 'none';
       return false;
     }
@@ -210,7 +176,7 @@ export default class FloatMenu extends Toolbar {
     // 将浮动工具栏定位到 placeholder 文本后面
     // CM6 使用 .cm-placeholder 类名
     const placeholderEl = codeMirrorLines.querySelector('.cm-placeholder');
-    const topOffset = this.getLineHeight(pos.line, codeMirror);
+    const topOffset = this.getLineHeight(lineNumber, view);
     if (placeholderEl instanceof HTMLElement && placeholderEl.offsetParent !== null) {
       const linesRect = codeMirrorLines.getBoundingClientRect();
       const textNode = Array.from(placeholderEl.childNodes).find(
@@ -232,65 +198,86 @@ export default class FloatMenu extends Toolbar {
   /**
    * 判断是否需要隐藏Float工具栏
    * 有选中内容，或者光标所在行有内容时隐藏float 工具栏
-   * @param {number} line
-   * @param {Object} codeMirror 兼容的 CodeMirror 对象
+   * 直接使用 CM6 原生 API
+   * @param {import('@codemirror/state').EditorState} state - CM6 编辑器状态
    * @returns {boolean} 是否需要隐藏float工具栏，true：需要隐藏
    */
-  isHidden(line, codeMirror) {
-    const selections = codeMirror.getSelections();
-    if (selections.length > 1) {
+  isHidden(state) {
+    const { selection, doc } = state;
+
+    // 检查是否有多选
+    if (selection.ranges.length > 1) {
       return true;
     }
-    const selection = codeMirror.getSelection();
-    if (selection.length > 0) {
+
+    // 检查是否有选中文本
+    const mainSelection = selection.main;
+    if (mainSelection.from !== mainSelection.to) {
       return true;
     }
-    if (codeMirror.getLine(line)) {
+
+    // 检查当前行是否有内容
+    const lineNumber = doc.lineAt(mainSelection.head).number;
+    const lineText = doc.line(lineNumber).text;
+    if (lineText) {
       return true;
     }
+
     return false;
   }
 
   /**
    * 获取对应行的顶部偏移量，用来定位 float 工具栏
+   * 直接使用 CM6 原生 API：coordsAtPos 和 lineBlockAt
+   * @see https://codemirror.net/docs/ref/#view.EditorView.coordsAtPos
+   * @see https://codemirror.net/docs/ref/#view.EditorView.lineBlockAt
    * @param {number} line 0-indexed 行号
-   * @param {Object} codeMirror 兼容的 CodeMirror 对象
+   * @param {import('@codemirror/view').EditorView} editorView CM6 EditorView 实例
    * @returns {number}
    */
-  getLineHeight(line, codeMirror) {
-    // CodeMirror 6 中需要重新实现行高计算
-    const editorAdapter = this.editor.editor;
-    if (!editorAdapter) {
+  getLineHeight(line, editorView) {
+    if (!editorView || !editorView.state || !editorView.state.doc) {
       return line * 20; // 默认行高
     }
 
-    // 兼容 CM6Adapter,获取真正的 EditorView
-    const editorView = editorAdapter.view || editorAdapter;
-
     try {
+      const { doc } = editorView.state;
       // line 是 0-indexed，doc.line 需要 1-indexed
-      const docLine = editorView.state.doc.line(line + 1);
+      const lineNumber = line + 1;
 
-      // 使用 coordsAtPos 获取行的顶部坐标
+      // 边界检查：确保行号在有效范围内
+      if (lineNumber < 1 || lineNumber > doc.lines) {
+        return line * 20;
+      }
+
+      const docLine = doc.line(lineNumber);
+
+      // 策略1：使用 coordsAtPos 获取精确坐标（CM6 原生 API）
       const topCoords = editorView.coordsAtPos(docLine.from);
+
       if (topCoords) {
+        // 正常情况：使用 coordsAtPos 的结果
         const scrollerRect = editorView.scrollDOM.getBoundingClientRect();
         const { scrollTop } = editorView.scrollDOM;
 
-        // 计算行顶部相对于 .cm-scroller 的位置（因为浮动菜单是挂载在 .cm-scroller 下）
+        // 计算行顶部相对于 .cm-scroller 的位置
         const lineTop = topCoords.top - scrollerRect.top + scrollTop;
-
-        // 获取行的实际高度
         const lineHeight = topCoords.bottom - topCoords.top;
-
-        // 获取浮动菜单的高度
         const menuHeight = this.options.dom ? this.options.dom.offsetHeight : 26;
 
-        // 返回垂直居中的位置：行顶部 + (行高 - 菜单高度) / 2
+        // 返回垂直居中的位置
         return lineTop + (lineHeight - menuHeight) / 2;
       }
+
+      // 策略2：使用 lineBlockAt（CM6 原生 API）
+      const lineBlock = editorView.lineBlockAt(docLine.from);
+      if (lineBlock) {
+        const menuHeight = this.options.dom ? this.options.dom.offsetHeight : 26;
+        const lineHeight = lineBlock.height || 20;
+        return lineBlock.top + (lineHeight - menuHeight) / 2;
+      }
     } catch (error) {
-      console.warn('Error getting line height:', error);
+      Logger.warn('Error getting line height:', error);
     }
 
     // 降级方案：使用默认行高

@@ -15,8 +15,13 @@
  */
 
 /**
+ * @typedef {import('~types/editor').CM6Adapter} CM6Adapter
+ */
+
+/**
  * CodeMirror 6: 处理回车时的列表自动缩进
- * @param {import('~types/editor').CM6Adapter} cm
+ * @param {CM6Adapter} cm - CM6Adapter 实例
+ * @returns {boolean} 是否处理了回车
  */
 export function handleNewlineIndentList(cm) {
   if (handleCherryList(cm)) return true;
@@ -25,31 +30,44 @@ export function handleNewlineIndentList(cm) {
   return true;
 }
 
+/**
+ * CodeMirror 6: 处理回车时的列表自动缩进
+ * @param {CM6Adapter} cm - CM6Adapter 实例
+ * @returns {boolean} 是否处理了列表缩进
+ */
 function handleCherryList(cm) {
   const cherryListRE = /^(\s*)([I一二三四五六七八九十]+)\.(\s+)/;
   const cherryListEmptyRE = /^(\s*)([I一二三四五六七八九十]+)\.(\s+)$/;
+
   // CodeMirror 6: 检查是否只读
   if (cm.getOption('readOnly')) return false;
+
+  // CM6 原生: listSelections() 返回 SelectionRange[]
   const ranges = cm.listSelections();
   const replacements = [];
+  const { doc } = cm.state;
+
   for (let i = 0; i < ranges.length; i++) {
-    const pos = ranges[i].head;
-    const line = cm.getLine(pos.line);
-    const match = cherryListRE.exec(line);
-    const cursorBeforeBullet = /^\s*$/.test(line.slice(0, pos.ch));
-    if (!ranges[i].empty() || cursorBeforeBullet || !match) return;
-    if (cherryListEmptyRE.test(line)) {
-      cm.replaceRange(
-        '',
-        {
-          line: pos.line,
-          ch: 0,
-        },
-        {
-          line: pos.line,
-          ch: pos.ch + 1,
-        },
-      );
+    const range = ranges[i];
+    // CM6 原生: 使用 head 获取光标位置（文档偏移量）
+    const headPos = range.head;
+    // 获取光标所在行
+    const lineInfo = doc.lineAt(headPos);
+    const lineNumber = lineInfo.number; // 1-indexed
+    const ch = headPos - lineInfo.from; // 行内偏移
+    const lineText = cm.getLine(lineNumber);
+
+    const match = cherryListRE.exec(lineText);
+    const cursorBeforeBullet = /^\s*$/.test(lineText.slice(0, ch));
+
+    // CM6 原生: 使用 empty 属性判断选区是否为空
+    if (!range.empty || cursorBeforeBullet || !match) return false;
+
+    if (cherryListEmptyRE.test(lineText)) {
+      // 清空当前行并插入换行
+      const lineStart = lineInfo.from;
+      const lineEnd = Math.min(headPos + 1, doc.length);
+      cm.replaceRange('', lineStart, lineEnd);
       replacements[i] = '\n';
     } else {
       const indent = match[1];
@@ -57,6 +75,7 @@ function handleCherryList(cm) {
       replacements[i] = `\n${indent}I.${after}`;
     }
   }
+
   cm.replaceSelections(replacements);
   return true;
 }

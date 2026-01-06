@@ -19,6 +19,7 @@ import { EditorState } from '@codemirror/state';
 import { defaultKeymap, indentWithTab } from '@codemirror/commands';
 import { getCodePreviewLangSelectElement } from '@/utils/code-preview-language-setting';
 import { copyToClip } from '@/utils/copy';
+import Logger from '@/Logger';
 
 export default class CodeBlockHandler {
   /**
@@ -62,6 +63,14 @@ export default class CodeBlockHandler {
     }
   }
   $remove() {
+    // 销毁 CodeMirror 6 EditorView 以防止内存泄漏
+    if (this.codeBlockEditor.editorDom.inputDom) {
+      try {
+        this.codeBlockEditor.editorDom.inputDom.destroy();
+      } catch (e) {
+        Logger.warn('Failed to destroy EditorView:', e);
+      }
+    }
     this.codeBlockEditor = { info: {}, codeBlockCodes: [], editorDom: {} };
   }
   $tryRemoveMe(event, callback) {

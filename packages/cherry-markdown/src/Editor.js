@@ -155,14 +155,22 @@ const cherryHighlighter = tagHighlighter([
  * @typedef {import('~types/editor').EditorConfiguration} EditorConfiguration
  * @typedef {import('~types/editor').EditorEventCallback<keyof import('~types/editor').EditorEventMap>} EditorEventCallback
  * @typedef {import('~types/editor').CM6Adapter} CM6AdapterType
+ * @typedef {import('~types/editor').TextMarker} TextMarker
+ * @typedef {import('~types/editor').MarkInfo} MarkInfo
+ * @typedef {import('~types/editor').MarkTextOptions} MarkTextOptions
+ * @typedef {import('~types/editor').SearchCursor} SearchCursor
+ * @typedef {import('~types/editor').ScrollInfo} ScrollInfo
+ * @typedef {import('@codemirror/state').SelectionRange} SelectionRange
+ * @typedef {import('@codemirror/view').Rect} Rect
  */
 
 /**
  * @typedef {Object} MarkEffectValue
- * @property {number} from
- * @property {number} to
- * @property {Decoration} [decoration]
- * @property {Object} [options]
+ * @property {number} from - 起始位置（文档偏移量）
+ * @property {number} to - 结束位置（文档偏移量）
+ * @property {Decoration} [decoration] - 装饰对象
+ * @property {MarkTextOptions} [options] - 标记选项
+ * @property {string} [markId] - 用于追踪 mark 的唯一标识符
  */
 
 // 创建用于动态切换 keymap 的 Compartment
@@ -172,22 +180,41 @@ const vimCompartment = new Compartment();
 
 // vim 模块缓存
 let vimModule = null;
+// vim 模块加载状态锁，防止并发加载
+let vimModuleLoading = false;
+// vim 模块加载等待队列
+let vimModuleLoadPromise = null;
 
 /**
  * 动态加载 vim 模块
  * @returns {Promise<any>} vim 模块
  */
 async function loadVimModule() {
+  // 如果已经加载完成，直接返回
   if (vimModule) {
     return vimModule;
   }
+
+  // 如果正在加载中，等待加载完成
+  if (vimModuleLoading && vimModuleLoadPromise) {
+    return vimModuleLoadPromise;
+  }
+
+  // 设置加载锁
+  vimModuleLoading = true;
+
   try {
-    // 动态导入 @replit/codemirror-vim
-    vimModule = await import('@replit/codemirror-vim');
+    // 创建加载 Promise 并保存，供其他并发调用等待
+    vimModuleLoadPromise = import('@replit/codemirror-vim');
+    vimModule = await vimModuleLoadPromise;
     return vimModule;
   } catch (e) {
-    console.error('Failed to load @replit/codemirror-vim. Please install it: npm install @replit/codemirror-vim');
+    Logger.error('Failed to load @replit/codemirror-vim. Please install it: npm install @replit/codemirror-vim');
     throw e;
+  } finally {
+    // 无论成功失败，都释放加载锁
+    vimModuleLoading = false;
+    vimModuleLoadPromise = null;
   }
 }
 
@@ -216,64 +243,127 @@ const searchHighlightField = StateField.define({
 
 /**
  * CodeMirror 6 适配器
+ * 提供对 EditorView 的封装，使用 CM6 原生类型
  * @implements {CM6AdapterType}
  */
 class CM6Adapter {
+  /**
+   * 创建 CM6Adapter 实例
+   * @param {EditorView} view - EditorView 实例
+   */
   constructor(view) {
+    /** @type {EditorView} */
     this.view = view;
+    /** @type {Map<string, Array<(...args: unknown[]) => void>>} */
     this.eventHandlers = new Map();
-    this.lastSearchResult = null;
+    /** @type {'sublime' | 'vim'} */
+    this.currentKeyMap = 'sublime';
   }
 
-  // 代理属性 - 直接访问底层 EditorView 的属性
+  // ==================== 代理属性 ====================
+
+  /**
+   * 获取编辑器状态
+   * @returns {EditorState}
+   */
   get state() {
     return this.view.state;
   }
 
+  /**
+   * 获取滚动容器 DOM 元素
+   * @returns {HTMLElement}
+   */
   get scrollDOM() {
     return this.view.scrollDOM;
   }
 
-  dispatch(...args) {
-    return this.view.dispatch(...args);
+  /**
+   * 分发事务到编辑器
+   * 直接透传到 EditorView.dispatch，支持多种调用方式
+   * @see https://codemirror.net/docs/ref/#view.EditorView.dispatch
+   * @param {...import('@codemirror/state').TransactionSpec} specs - 事务规范
+   * @returns {void}
+   */
+  dispatch(...specs) {
+    return this.view.dispatch(...specs);
   }
 
-  requestMeasure(...args) {
-    return this.view.requestMeasure(...args);
+  /**
+   * 请求测量 - 直接透传到 EditorView.requestMeasure
+   * @see https://codemirror.net/docs/ref/#view.EditorView.requestMeasure
+   * @param {object} [request] - 测量请求对象
+   * @returns {void}
+   */
+  requestMeasure(request) {
+    return this.view.requestMeasure(request);
   }
 
-  posAtCoords(...args) {
-    return this.view.posAtCoords(...args);
+  /**
+   * 坐标转位置 - 直接透传到 EditorView.posAtCoords
+   * @see https://codemirror.net/docs/ref/#view.EditorView.posAtCoords
+   * @param {{ x: number; y: number }} coords - 屏幕坐标
+   * @param {false} [precise] - 是否精确匹配
+   * @returns {number | null}
+   */
+  posAtCoords(coords, precise) {
+    return this.view.posAtCoords(coords, precise);
   }
 
-  lineBlockAt(...args) {
-    return this.view.lineBlockAt(...args);
+  /**
+   * 获取行块信息 - 直接透传到 EditorView.lineBlockAt
+   * @see https://codemirror.net/docs/ref/#view.EditorView.lineBlockAt
+   * @param {number} pos - 文档位置
+   * @returns {import('@codemirror/view').BlockInfo}
+   */
+  lineBlockAt(pos) {
+    return this.view.lineBlockAt(pos);
   }
 
-  // 获取当前值
+  // ==================== 基本操作 ====================
+
+  /**
+   * 获取编辑器全部内容
+   * @returns {string} 文档内容字符串
+   */
   getValue() {
     return this.view.state.doc.toString();
   }
 
-  // 设置值
+  /**
+   * 设置编辑器内容
+   * @param {string} value - 要设置的文本内容
+   * @returns {void}
+   */
   setValue(value) {
     this.view.dispatch({
       changes: { from: 0, to: this.view.state.doc.length, insert: value },
     });
   }
 
-  // 获取选中文本
+  /**
+   * 获取当前选中的文本
+   * @returns {string} 选中的文本，如果没有选中则返回空字符串
+   */
   getSelection() {
     const { from, to } = this.view.state.selection.main;
     return this.view.state.doc.sliceString(from, to);
   }
 
-  // 获取多选区文本
+  /**
+   * 获取所有选区的文本
+   * @returns {string[]} 所有选区文本的数组
+   */
   getSelections() {
     return this.view.state.selection.ranges.map((range) => this.view.state.doc.sliceString(range.from, range.to));
   }
 
-  // 替换选中文本
+  /**
+   * 替换当前选中的文本
+   * @param {string} text - 替换文本
+   * @param {'around' | 'start'} [select='around'] - 替换后的选区行为
+   * @returns {void}
+   */
   replaceSelection(text, select = 'around') {
     const { from, to } = this.view.state.selection.main;
     this.view.dispatch({
@@ -282,7 +372,12 @@ class CM6Adapter {
     });
   }
 
-  // 替换多选区文本
+  /**
+   * 替换多个选区的文本
+   * @param {string[]} texts - 替换文本数组
+   * @param {'around' | 'start'} [select='around'] - 替换后的选区行为
+   * @returns {void}
+   */
   replaceSelections(texts, select = 'around') {
     const { ranges } = this.view.state.selection;
     const changes = ranges.map((range, i) => ({
@@ -290,103 +385,150 @@ class CM6Adapter {
       to: range.to,
       insert: texts[i] || '',
     }));
-    this.view.dispatch({ changes });
-  }
 
-  // 获取光标位置
-  getCursor(type = 'head') {
-    const pos = type === 'head' ? this.view.state.selection.main.head : this.view.state.selection.main.anchor;
-    return this.posToLineAndCh(pos);
-  }
-
-  // 设置光标位置
-  setCursor(line, ch) {
-    const pos = this.lineAndChToPos(line, ch);
-    this.view.dispatch({ selection: { anchor: pos } });
-  }
-
-  // 设置选区
-  setSelection(from, to) {
-    const fromPos = typeof from === 'object' ? this.lineAndChToPos(from.line, from.ch) : from;
-    let toPos = fromPos;
-    if (to) {
-      toPos = typeof to === 'object' ? this.lineAndChToPos(to.line, to.ch) : to;
+    // 计算新的选区位置
+    let newSelections;
+    if (select === 'around') {
+      // 选区移动到替换文本的末尾
+      let offset = 0;
+      newSelections = ranges.map((range, i) => {
+        const text = texts[i] || '';
+        const newFrom = range.from + offset;
+        const newTo = newFrom + text.length;
+        // 更新偏移量：新文本长度 - 原文本长度
+        offset += text.length - (range.to - range.from);
+        return EditorSelection.range(newTo, newTo);
+      });
+    } else if (select === 'start') {
+      // 选区移动到替换文本的开头
+      let offset = 0;
+      newSelections = ranges.map((range, i) => {
+        const text = texts[i] || '';
+        const newFrom = range.from + offset;
+        offset += text.length - (range.to - range.from);
+        return EditorSelection.range(newFrom, newFrom);
+      });
     }
-    this.view.dispatch({ selection: { anchor: fromPos, head: toPos } });
-  }
 
-  // 获取选区列表
-  listSelections() {
-    return this.view.state.selection.ranges.map((range) => {
-      const anchor = this.posToLineAndCh(range.anchor);
-      const head = this.posToLineAndCh(range.head);
-      return {
-        anchor,
-        head,
-        empty: () => range.from === range.to,
-      };
+    this.view.dispatch({
+      changes,
+      selection: newSelections ? EditorSelection.create(newSelections) : undefined,
     });
   }
 
-  // 获取行内容
-  getLine(line) {
-    const lineObj = this.view.state.doc.line(line + 1);
+  // ==================== 光标和选区操作 ====================
+
+  /**
+   * 获取光标位置（文档偏移量）
+   * @param {'head' | 'anchor'} [type='head'] - 'head' 返回光标头部位置，'anchor' 返回锚点位置
+   * @returns {number} 光标位置（文档偏移量）
+   */
+  getCursor(type = 'head') {
+    return type === 'head' ? this.view.state.selection.main.head : this.view.state.selection.main.anchor;
+  }
+
+  /**
+   * 设置光标位置
+   * @param {number} pos - 光标位置（文档偏移量）
+   * @returns {void}
+   */
+  setCursor(pos) {
+    this.view.dispatch({ selection: { anchor: pos } });
+  }
+
+  /**
+   * 设置选区
+   * @param {number} anchor - 选区锚点位置（文档偏移量）
+   * @param {number} [head] - 选区头部位置（文档偏移量），不传则与 anchor 相同
+   * @returns {void}
+   */
+  setSelection(anchor, head) {
+    const headPos = head !== undefined ? head : anchor;
+    this.view.dispatch({ selection: { anchor, head: headPos } });
+  }
+
+  /**
+   * 获取所有选区
+   * @returns {readonly SelectionRange[]} CM6 原生 SelectionRange 数组
+   */
+  listSelections() {
+    return this.view.state.selection.ranges;
+  }
+
+  // ==================== 行操作 ====================
+
+  /**
+   * 获取指定行的内容
+   * @param {number} lineNumber - 行号（1-indexed，与 CM6 一致）
+   * @returns {string} 行内容字符串
+   */
+  getLine(lineNumber) {
+    const lineObj = this.view.state.doc.line(lineNumber);
     return lineObj.text;
   }
 
-  // 获取行数
+  /**
+   * 获取文档总行数
+   * @returns {number} 行数
+   */
   lineCount() {
     return this.view.state.doc.lines;
   }
 
-  // 获取范围内的文本
+  /**
+   * 获取指定范围的文本
+   * @param {number} from - 起始位置（文档偏移量）
+   * @param {number} to - 结束位置（文档偏移量）
+   * @returns {string} 范围内的文本
+   */
   getRange(from, to) {
-    const fromPos = this.lineAndChToPos(from.line, from.ch);
-    const toPos = this.lineAndChToPos(to.line, to.ch);
-    return this.view.state.doc.sliceString(fromPos, toPos);
+    return this.view.state.doc.sliceString(from, to);
   }
 
-  // 替换范围内的文本
+  /**
+   * 替换指定范围的文本
+   * @param {string} text - 替换文本
+   * @param {number} from - 起始位置（文档偏移量）
+   * @param {number} [to] - 结束位置（文档偏移量），不传则在 from 位置插入
+   * @returns {void}
+   */
   replaceRange(text, from, to) {
-    const fromPos = this.lineAndChToPos(from.line, from.ch);
-    const toPos = to ? this.lineAndChToPos(to.line, to.ch) : fromPos;
+    const toPos = to !== undefined ? to : from;
     this.view.dispatch({
-      changes: { from: fromPos, to: toPos, insert: text },
+      changes: { from, to: toPos, insert: text },
     });
   }
 
-  // 获取文档对象
+  // ==================== 文档操作 ====================
+
+  /**
+   * 获取文档对象（返回自身以保持链式调用）
+   * @returns {CM6Adapter} CM6Adapter 实例
+   */
   getDoc() {
     return this;
   }
 
-  // 位置转换: pos -> {line, ch}
-  posToLineAndCh(pos) {
-    const line = this.view.state.doc.lineAt(pos);
-    return { line: line.number - 1, ch: pos - line.from };
+  // ==================== 坐标操作 ====================
+
+  /**
+   * 获取指定位置的屏幕坐标
+   * @param {number} [pos] - 文档位置（偏移量），不传则使用当前光标位置
+   * @returns {Rect | null} 坐标信息，包含 left、top、bottom、right
+   */
+  cursorCoords(pos) {
+    const position = pos !== undefined ? pos : this.view.state.selection.main.head;
+    return this.view.coordsAtPos(position);
   }
 
-  // 位置转换: {line, ch} -> pos
-  lineAndChToPos(lineParam, chParam) {
-    let lineNum = lineParam;
-    let chNum = chParam;
-    if (typeof lineParam === 'object') {
-      chNum = lineParam.ch;
-      lineNum = lineParam.line;
-    }
-    const lineObj = this.view.state.doc.line(lineNum + 1);
-    return lineObj.from + Math.min(chNum, lineObj.length);
-  }
+  // ==================== 滚动操作 ====================
 
-  // 光标坐标
-  cursorCoords(where) {
-    const pos = where ? this.lineAndChToPos(where.line, where.ch) : this.view.state.selection.main.head;
-    const coords = this.view.coordsAtPos(pos);
-    if (!coords) return { left: 0, top: 0, bottom: 0 };
-    return coords;
-  }
-
-  // 滚动到指定位置
+  /**
+   * 滚动到指定位置
+   * @param {number | null} x - 水平滚动位置，null 表示不改变
+   * @param {number | null} y - 垂直滚动位置，null 表示不改变
+   * @returns {void}
+   */
   scrollTo(x, y) {
     if (y !== null) {
       this.view.scrollDOM.scrollTop = y;
@@ -396,15 +538,21 @@ class CM6Adapter {
     }
   }
 
-  // 滚动到视图
+  /**
+   * 将指定位置滚动到可视区域
+   * @param {number} pos - 文档位置（偏移量）
+   * @returns {void}
+   */
   scrollIntoView(pos) {
-    const position = this.lineAndChToPos(pos.line, pos.ch);
     this.view.dispatch({
-      effects: EditorView.scrollIntoView(position),
+      effects: EditorView.scrollIntoView(pos),
     });
   }
 
-  // 获取滚动信息
+  /**
+   * 获取滚动信息
+   * @returns {ScrollInfo} 滚动信息对象
+   */
   getScrollInfo() {
     return {
       left: this.view.scrollDOM.scrollLeft,
@@ -416,35 +564,56 @@ class CM6Adapter {
     };
   }
 
-  // 获取包装元素
+  // ==================== DOM 操作 ====================
+
+  /**
+   * 获取编辑器包装元素
+   * @returns {HTMLElement} 包装 DOM 元素
+   */
   getWrapperElement() {
     return this.view.dom;
   }
 
-  // 获取滚动元素
+  /**
+   * 获取滚动容器元素
+   * @returns {HTMLElement} 滚动容器 DOM 元素
+   */
   getScrollerElement() {
     return this.view.scrollDOM;
   }
 
-  // 刷新编辑器
+  /**
+   * 刷新编辑器布局
+   * @returns {void}
+   */
   refresh() {
     this.view.requestMeasure();
   }
 
-  // 聚焦
+  /**
+   * 聚焦编辑器
+   * @returns {void}
+   */
   focus() {
     this.view.focus();
   }
 
-  // 设置选项
+  // ==================== 选项操作 ====================
+
+  /**
+   * 设置编辑器选项
+   * @param {'value' | 'keyMap' | string} option - 选项名称
+   * @param {string | boolean | object} value - 选项值
+   * @returns {void}
+   */
   setOption(option, value) {
     switch (option) {
       case 'value':
-        this.setValue(value);
+        this.setValue(/** @type {string} */ (value));
         break;
       case 'keyMap':
         // 动态切换 keyMap
-        this.setKeyMap(value);
+        this.setKeyMap(/** @type {'sublime' | 'vim'} */ (value));
         break;
       default:
         // 静默忽略不支持的选项，避免过多警告
@@ -454,7 +623,7 @@ class CM6Adapter {
 
   /**
    * 设置键盘映射模式
-   * @param {'sublime' | 'vim'} mode 键盘映射模式
+   * @param {'sublime' | 'vim'} mode - 键盘映射模式
    * @returns {Promise<void>}
    */
   async setKeyMap(mode) {
@@ -478,7 +647,11 @@ class CM6Adapter {
     }
   }
 
-  // 获取选项
+  /**
+   * 获取编辑器选项
+   * @param {'readOnly' | 'disableInput' | 'value' | string} option - 选项名称
+   * @returns {string | boolean | object | null} 选项值
+   */
   getOption(option) {
     switch (option) {
       case 'readOnly':
@@ -493,7 +666,15 @@ class CM6Adapter {
     }
   }
 
-  // 设置搜索查询（用于高亮搜索结果）
+  // ==================== 搜索操作 ====================
+
+  /**
+   * 设置搜索查询并高亮匹配
+   * @param {string} query - 搜索字符串
+   * @param {boolean} [caseSensitive=false] - 是否区分大小写
+   * @param {boolean} [isRegex=false] - 是否为正则表达式
+   * @returns {void}
+   */
   setSearchQuery(query, caseSensitive = false, isRegex = false) {
     // 如果查询为空，清除搜索
     if (!query || query.trim() === '') {
@@ -545,7 +726,10 @@ class CM6Adapter {
     });
   }
 
-  // 清除搜索高亮
+  /**
+   * 清除搜索高亮
+   * @returns {void}
+   */
   clearSearchQuery() {
     // 清除所有搜索高亮装饰
     this.view.dispatch({
@@ -553,11 +737,16 @@ class CM6Adapter {
     });
   }
 
-  // 标记文本
-  markText(from, to, options) {
-    const fromPos = this.lineAndChToPos(from.line, from.ch);
-    const toPos = this.lineAndChToPos(to.line, to.ch);
+  // ==================== 标记操作 ====================
 
+  /**
+   * 标记指定范围的文本
+   * @param {number} from - 起始位置（文档偏移量）
+   * @param {number} to - 结束位置（文档偏移量）
+   * @param {MarkTextOptions} options - 标记选项
+   * @returns {TextMarker} 标记对象
+   */
+  markText(from, to, options) {
     // 创建装饰
     const decoration = options.replacedWith
       ? Decoration.replace({ widget: new ReplacementWidget(options.replacedWith) })
@@ -566,40 +755,70 @@ class CM6Adapter {
           attributes: options.title ? { title: options.title } : undefined,
         });
 
-    // 添加到状态
+    // 生成唯一标识符用于追踪 mark
+    const markId = `mark_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    // 添加到状态，同时存储原始位置信息和 markId
     this.view.dispatch({
-      effects: addMark.of({ from: fromPos, to: toPos, decoration, options }),
+      effects: addMark.of({ from, to, decoration, options, markId }),
     });
+
+    // 保存对 view 的引用，用于 find() 方法
+    const { view } = this;
+    // 保存 markId 用于后续查找和删除
+    const savedMarkId = markId;
 
     // 返回一个 mark 对象
     return {
       clear: () => {
-        this.view.dispatch({
-          effects: removeMark.of({ from: fromPos, to: toPos }),
+        // 使用 markId 精确删除
+        view.dispatch({
+          effects: removeMark.of({ from, to, markId: savedMarkId }),
         });
       },
-      find: () => ({ from, to }),
+      find: () => {
+        // 动态查找当前 mark 的位置，使用 markId 精确匹配
+        const marks = view.state.field(markField, false);
+        if (!marks) return null;
+
+        // 遍历所有 mark 找到匹配的 markId
+        const iter = marks.iter();
+        while (iter.value) {
+          // 优先通过 markId 精确匹配
+          if (iter.value.spec?.markId === savedMarkId) {
+            return { from: iter.from, to: iter.to };
+          }
+          iter.next();
+        }
+
+        // 如果找不到，返回原始位置
+        return { from, to };
+      },
       className: options.className,
+      markId: savedMarkId,
     };
   }
 
-  // 查找标记
+  /**
+   * 查找指定范围内的标记
+   * @param {number} from - 起始位置（文档偏移量）
+   * @param {number} to - 结束位置（文档偏移量）
+   * @returns {MarkInfo[]} 标记信息数组
+   */
   findMarks(from, to) {
-    const fromPos = this.lineAndChToPos(from.line, from.ch);
-    const toPos = this.lineAndChToPos(to.line, to.ch);
-
     // 从 markField 中获取当前的装饰
     const marks = this.view.state.field(markField, false);
     if (!marks) return [];
 
+    /** @type {MarkInfo[]} */
     const result = [];
     const iter = marks.iter();
     while (iter.value) {
       // 检查装饰是否与指定范围重叠
-      if (iter.from <= toPos && iter.to >= fromPos) {
+      if (iter.from <= to && iter.to >= from) {
         result.push({
-          from: this.posToLineAndCh(iter.from),
-          to: this.posToLineAndCh(iter.to),
+          from: iter.from,
+          to: iter.to,
           className: iter.value.spec?.class || '',
         });
       }
@@ -608,19 +827,31 @@ class CM6Adapter {
     return result;
   }
 
-  // 获取搜索游标
-  getSearchCursor(query, pos, caseFold) {
+  // ==================== 搜索游标 ====================
+
+  /**
+   * 获取搜索游标
+   * @param {string | RegExp} query - 搜索字符串或正则表达式
+   * @param {number} [pos=0] - 起始搜索位置（文档偏移量）
+   * @param {boolean} [caseFold] - 是否忽略大小写（true 忽略，false 区分）
+   * @returns {SearchCursor} 搜索游标对象
+   */
+  getSearchCursor(query, pos = 0, caseFold) {
     const searchQuery = new SearchQuery({
       search: typeof query === 'string' ? query : query.source,
       regexp: query instanceof RegExp,
       caseSensitive: caseFold === false, // caseFold 为 false 时表示大小写敏感
     });
 
-    let currentPos = pos ? this.lineAndChToPos(pos.line, pos.ch) : 0;
+    let currentPos = pos;
     const { doc } = this.view.state;
 
+    // 使用闭包变量存储搜索结果，避免多个搜索游标互相干扰
+    /** @type {{ from: number; to: number } | null} */
+    let lastSearchResult = null;
+
     // 用于向前搜索的辅助函数
-    const findPreviousMatch = (fromPos) => {
+    const findPreviousMatch = (/** @type {number} */ fromPos) => {
       // 从文档开始到指定位置查找所有匹配
       const cursor = searchQuery.getCursor(doc, 0);
       let lastMatch = null;
@@ -640,7 +871,7 @@ class CM6Adapter {
         if (result.done) return false;
 
         currentPos = result.value.to;
-        this.lastSearchResult = result.value;
+        lastSearchResult = result.value;
 
         const matched = doc.sliceString(result.value.from, result.value.to);
         const matchArr = query instanceof RegExp ? matched.match(query) : [matched];
@@ -651,34 +882,38 @@ class CM6Adapter {
         if (!prevMatch) return false;
 
         currentPos = prevMatch.from;
-        this.lastSearchResult = prevMatch;
+        lastSearchResult = prevMatch;
 
         const matched = doc.sliceString(prevMatch.from, prevMatch.to);
         const matchResult = query instanceof RegExp ? matched.match(query) : [matched];
         return matchResult || false;
       },
       from: () => {
-        if (!this.lastSearchResult) return null;
-        return this.posToLineAndCh(this.lastSearchResult.from);
+        if (!lastSearchResult) return null;
+        return lastSearchResult.from;
       },
       to: () => {
-        if (!this.lastSearchResult) return null;
-        return this.posToLineAndCh(this.lastSearchResult.to);
+        if (!lastSearchResult) return null;
+        return lastSearchResult.to;
       },
-      matches: (reverse, start) => {
+      matches: (reverse, startPos) => {
         // 返回当前匹配的位置信息
-        if (!this.lastSearchResult) {
-          return { from: start, to: start };
+        if (!lastSearchResult) {
+          return { from: startPos, to: startPos };
         }
-        return {
-          from: this.posToLineAndCh(this.lastSearchResult.from),
-          to: this.posToLineAndCh(this.lastSearchResult.to),
-        };
+        return { from: lastSearchResult.from, to: lastSearchResult.to };
       },
     };
   }
 
-  // 事件监听
+  // ==================== 事件系统 ====================
+
+  /**
+   * 添加事件监听器
+   * @param {string} event - 事件名称
+   * @param {(...args: unknown[]) => void} handler - 事件处理函数
+   * @returns {void}
+   */
   on(event, handler) {
     if (!this.eventHandlers.has(event)) {
       this.eventHandlers.set(event, []);
@@ -686,47 +921,64 @@ class CM6Adapter {
     this.eventHandlers.get(event).push(handler);
   }
 
-  // 触发事件
+  /**
+   * 移除事件监听器
+   * @param {string} event - 事件名称
+   * @param {(...args: unknown[]) => void} handler - 事件处理函数
+   * @returns {void}
+   */
+  off(event, handler) {
+    const handlers = this.eventHandlers.get(event);
+    if (handlers) {
+      const index = handlers.indexOf(handler);
+      if (index > -1) {
+        handlers.splice(index, 1);
+      }
+    }
+  }
+
+  /**
+   * 触发事件
+   * @param {string} event - 事件名称
+   * @param {...unknown} args - 事件参数
+   * @returns {void}
+   */
   emit(event, ...args) {
     const handlers = this.eventHandlers.get(event);
     if (handlers) {
       // 特殊处理 change 事件
-      if (event === 'change' && args[0]?.changes) {
-        const update = args[0];
-        update.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
-          // 使用 startState 来转换位置,避免访问可能已失效的当前状态
-          const fromLine = update.startState.doc.lineAt(fromA);
-          const toLine = update.startState.doc.lineAt(toA);
-          const from = { line: fromLine.number - 1, ch: fromA - fromLine.from };
-          const to = { line: toLine.number - 1, ch: toA - toLine.from };
-          const text = inserted.toString().split('\n');
-
-          // 获取事件来源
-          let origin;
-          if (update.transactions.length > 0) {
-            const tr = update.transactions[0];
-            const userEvent = tr.annotation(Transaction.userEvent);
-            if (userEvent) {
-              if (userEvent.includes('input')) origin = '+input';
-              else if (userEvent.includes('delete')) origin = '+delete';
-              else if (userEvent.includes('undo')) origin = 'undo';
-              else if (userEvent.includes('redo')) origin = 'redo';
+      if (event === 'change' && args.length > 0) {
+        /** @type {import('@codemirror/view').ViewUpdate} */
+        const update = /** @type {import('@codemirror/view').ViewUpdate} */ (args[0]);
+        if (update && update.changes) {
+          update.changes.iterChanges((fromA, toA, fromB, toB, inserted) => {
+            // 获取事件来源
+            let origin;
+            if (update.transactions.length > 0) {
+              const tr = update.transactions[0];
+              const userEvent = tr.annotation(Transaction.userEvent);
+              if (userEvent) {
+                if (userEvent.includes('input')) origin = '+input';
+                else if (userEvent.includes('delete')) origin = '+delete';
+                else if (userEvent.includes('undo')) origin = 'undo';
+                else if (userEvent.includes('redo')) origin = 'redo';
+              }
             }
-          }
 
-          const changeObj = {
-            from,
-            to,
-            text,
-            removed: update.startState.doc.sliceString(fromA, toA).split('\n'),
-            origin,
-          };
+            const changeObj = {
+              from: fromA,
+              to: toA,
+              text: inserted.toString().split('\n'),
+              removed: update.startState.doc.sliceString(fromA, toA).split('\n'),
+              origin,
+            };
 
-          handlers.forEach((handler) => handler(this, changeObj));
-        });
-      } else {
-        handlers.forEach((handler) => handler(this, ...args));
+            handlers.forEach((handler) => handler(this, changeObj));
+          });
+          return;
+        }
       }
+      handlers.forEach((handler) => handler(this, ...args));
     }
   }
 }
@@ -746,7 +998,7 @@ class ReplacementWidget extends WidgetType {
 // Mark 状态管理
 /** @type {import('@codemirror/state').StateEffectType<MarkEffectValue>} */
 const addMark = StateEffect.define();
-/** @type {import('@codemirror/state').StateEffectType<{from: number, to: number}>} */
+/** @type {import('@codemirror/state').StateEffectType<{from: number, to: number, markId?: string}>} */
 const removeMark = StateEffect.define();
 
 const markField = StateField.define({
@@ -757,12 +1009,24 @@ const markField = StateField.define({
     let updatedMarks = currentMarks.map(tr.changes);
     for (const effect of tr.effects) {
       if (effect.is(addMark) && effect.value) {
+        // 创建带有 markId 的装饰
+        const decoration = effect.value.decoration.range(effect.value.from, effect.value.to);
+        // 在装饰的 spec 中存储 markId
+        if (effect.value.markId) {
+          decoration.value.spec.markId = effect.value.markId;
+        }
         updatedMarks = updatedMarks.update({
-          add: [effect.value.decoration.range(effect.value.from, effect.value.to)],
+          add: [decoration],
         });
       } else if (effect.is(removeMark) && effect.value) {
+        // 优先使用 markId 匹配，否则使用位置匹配
         updatedMarks = updatedMarks.update({
-          filter: (from, to) => from !== effect.value.from || to !== effect.value.to,
+          filter: (from, to, value) => {
+            if (effect.value.markId && value.spec?.markId) {
+              return value.spec.markId !== effect.value.markId;
+            }
+            return from !== effect.value.from || to !== effect.value.to;
+          },
         });
       }
     }
@@ -889,8 +1153,8 @@ export default class Editor {
 
   /**
    * 把大字符串变成省略号
-   * @param {*} reg 正则
-   * @param {*} className 利用codemirror的MarkText生成的新元素的class
+   * @param {RegExp} reg 正则
+   * @param {string} className 利用codemirror的MarkText生成的新元素的class
    */
   formatBigData2Mark = (reg, className) => {
     const { editor } = this;
@@ -898,16 +1162,16 @@ export default class Editor {
 
     let oneSearch = searcher.findNext();
     for (; oneSearch !== false; oneSearch = searcher.findNext()) {
-      const target = searcher.from();
-      if (!target) {
+      // CM6 原生: from() 返回文档偏移量
+      const fromPos = searcher.from();
+      if (fromPos === null) {
         continue;
       }
       const bigString = oneSearch[2] ?? '';
-      const targetChFrom = target.ch + (oneSearch[1]?.length || 0);
-      const targetChTo = targetChFrom + bigString.length;
-      const targetLine = target.line;
-      const begin = { line: targetLine, ch: targetChFrom };
-      const end = { line: targetLine, ch: targetChTo };
+      // 计算实际的标记范围
+      const prefixLength = oneSearch[1]?.length || 0;
+      const begin = fromPos + prefixLength;
+      const end = begin + bigString.length;
 
       // 检查是否已经标记过
       if (editor.findMarks(begin, end).length > 0) {
@@ -918,7 +1182,7 @@ export default class Editor {
       const newSpan = createElement('span', `cm-string ${className}`, { title: bigString });
       newSpan.textContent = bigString;
 
-      // 标记文本
+      // 标记文本（使用文档偏移量）
       editor.markText(begin, end, { replacedWith: newSpan, atomic: true });
     }
   };
@@ -938,21 +1202,21 @@ export default class Editor {
 
     let oneSearch = searcher.findNext();
     for (; oneSearch !== false; oneSearch = searcher.findNext()) {
-      const target = searcher.from();
-      if (!target) {
+      // CM6 原生: from() 返回文档偏移量
+      const fromPos = searcher.from();
+      if (fromPos === null) {
         continue;
       }
 
-      const from = { line: target.line, ch: target.ch };
-      const to = { line: target.line, ch: target.ch + 1 };
+      const toPos = fromPos + 1;
 
       // 检查是否已经标记过
-      const existMarks = editor.findMarks(from, to).filter((item) => {
+      const existMarks = editor.findMarks(fromPos, toPos).filter((item) => {
         return item.className === 'cm-fullWidth';
       });
 
       if (existMarks.length === 0) {
-        editor.markText(from, to, {
+        editor.markText(fromPos, toPos, {
           className: 'cm-fullWidth',
           title: '按住Ctrl/Cmd点击切换成半角（Hold down Ctrl/Cmd and click to switch to half-width）',
         });
@@ -1384,13 +1648,13 @@ export default class Editor {
     this.editor = editor;
 
     // 绑定事件监听器
-    editor.on('blur', (evt) => {
-      this.options.onBlur(evt, editor);
+    editor.on('blur', (/** @type {Event} */ evt) => {
+      this.options.onBlur(/** @type {import('@codemirror/view').ViewUpdate} */ (/** @type {unknown} */ (evt)), editor);
       this.$cherry.$event.emit('blur', { evt, cherry: this.$cherry });
     });
 
-    editor.on('focus', (evt) => {
-      this.options.onFocus(evt, editor);
+    editor.on('focus', (/** @type {Event} */ evt) => {
+      this.options.onFocus(/** @type {import('@codemirror/view').ViewUpdate} */ (/** @type {unknown} */ (evt)), editor);
       this.$cherry.$event.emit('focus', { evt, cherry: this.$cherry });
     });
 
@@ -1408,15 +1672,15 @@ export default class Editor {
       this.onScroll(editor.view);
     });
 
-    editor.on('paste', (event) => {
+    editor.on('paste', (/** @type {ClipboardEvent} */ event) => {
       this.onPaste(event, editor);
     });
 
-    editor.on('mousedown', (event) => {
+    editor.on('mousedown', (/** @type {MouseEvent} */ event) => {
       this.onMouseDown(view, event);
     });
 
-    editor.on('keyup', (event) => {
+    editor.on('keyup', (/** @type {KeyboardEvent} */ event) => {
       this.onKeyup(event, view);
     });
 

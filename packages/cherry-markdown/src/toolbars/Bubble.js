@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import Logger from '@/Logger';
 import Toolbar from './Toolbar';
 /**
  * 在编辑区域选中文本时浮现的bubble工具栏
@@ -48,7 +49,14 @@ export default class Bubble extends Toolbar {
     this.bubbleDom = this.options.dom;
     this.editorDom = this.options.editor.getEditorDom();
     this.initBubbleDom();
-    this.editorDom.querySelector('.cm-editor').appendChild(this.bubbleDom);
+    // 添加空值检查，确保 .cm-editor 存在
+    const cmEditor = this.editorDom.querySelector('.cm-editor');
+    if (cmEditor) {
+      cmEditor.appendChild(this.bubbleDom);
+    } else {
+      Logger.warn('Bubble: .cm-editor not found, appending to editorDom instead');
+      this.editorDom.appendChild(this.bubbleDom);
+    }
     Object.entries(this.shortcutKeyMap).forEach(([key, value]) => {
       this.$cherry.toolbar.shortcutKeyMap[key] = value;
     });
@@ -93,7 +101,13 @@ export default class Bubble extends Toolbar {
       this.bubbleDom.style.marginTop = '0';
       this.bubbleDom.dataset.scrollTop = String(this.getScrollTop());
     }
-    const positionLimit = this.editorDom.querySelector('.cm-lineWrapping').firstChild.getBoundingClientRect();
+    // 安全获取 .cm-lineWrapping 及其子元素
+    const lineWrapping = this.editorDom.querySelector('.cm-lineWrapping');
+    if (!lineWrapping || !lineWrapping.firstChild) {
+      this.hideBubble();
+      return;
+    }
+    const positionLimit = lineWrapping.firstChild.getBoundingClientRect();
     const editorPosition = this.editorDom.getBoundingClientRect();
     const minLeft = positionLimit.left - editorPosition.left;
     const maxLeft = positionLimit.width + minLeft;
