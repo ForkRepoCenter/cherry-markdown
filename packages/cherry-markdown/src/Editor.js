@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 // @ts-check
-import { EditorView, keymap, placeholder, lineNumbers, Decoration, WidgetType } from '@codemirror/view';
+import { EditorView, keymap, placeholder, lineNumbers, Decoration, WidgetType, drawSelection } from '@codemirror/view';
 import { EditorState, StateEffect, StateField, EditorSelection, Transaction, Compartment } from '@codemirror/state';
 import { markdown } from '@codemirror/lang-markdown';
 import { search, searchKeymap, SearchQuery } from '@codemirror/search';
@@ -1395,10 +1395,8 @@ export default class Editor {
     const mdText = htmlParser.run(html);
     if (typeof mdText === 'string' && mdText.trim().length > 0) {
       const selection = editorView.state.selection.main;
-      const currentCursor = {
-        line: editorView.state.doc.lineAt(selection.from).number - 1,
-        ch: selection.from - editorView.state.doc.lineAt(selection.from).from,
-      };
+      // CM6: 使用文档偏移量而不是 {line, ch}
+      const currentCursor = selection.from;
 
       // 替换选中内容
       editorView.dispatch({
@@ -1515,6 +1513,12 @@ export default class Editor {
       search(),
       closeBrackets(),
       syntaxHighlighting(defaultHighlightStyle),
+
+      // 自定义选中样式 - 实现整行高亮效果
+      drawSelection({
+        cursorBlinkRate: 1200,
+        drawRangeCursor: false,
+      }),
 
       // 搜索高亮字段
       searchHighlightField,

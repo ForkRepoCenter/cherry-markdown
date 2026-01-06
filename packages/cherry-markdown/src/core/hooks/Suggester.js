@@ -27,7 +27,8 @@ import { replaceLookbehind } from '@/utils/lookbehind-replace';
 import { isBrowser } from '@/utils/env';
 
 /**
- * @typedef {import('codemirror')} CodeMirror
+ * @typedef {import('@codemirror/view').EditorView} EditorView
+ * @typedef {import('~types/editor').CM6Adapter} CM6Adapter
  */
 
 /**
@@ -592,19 +593,20 @@ class SuggesterPanel {
    */
   pasteSelectResult(idx, evt) {
     const { cursorFrom } = this;
-    if (!cursorFrom) {
+    if (cursorFrom === null || cursorFrom === undefined) {
       return;
     }
     let cursorTo;
     // 仅替换当前联想触发期间录入的字符，避免吞掉光标后的文本
     // Reference: issue #1493 https://github.com/Tencent/cherry-markdown/issues/1493
+    // CM6: cursorFrom 是文档偏移量（number）
     const typedLength = Array.isArray(this.searchKeyCache) ? this.searchKeyCache.join('').length : 0;
     if (typedLength > 0) {
-      cursorTo = { line: cursorFrom.line, ch: cursorFrom.ch + typedLength };
-    } else if (this.cursorTo) {
-      cursorTo = { line: this.cursorTo.line, ch: this.cursorTo.ch };
+      cursorTo = cursorFrom + typedLength;
+    } else if (this.cursorTo !== null && this.cursorTo !== undefined) {
+      cursorTo = this.cursorTo;
     } else {
-      cursorTo = { line: cursorFrom.line, ch: cursorFrom.ch };
+      cursorTo = cursorFrom;
     }
     if (this.optionList[idx]) {
       let result = '';
@@ -624,34 +626,43 @@ class SuggesterPanel {
         result = ` ${this.keyword}${this.optionList[idx]} `;
       }
       // 如果回填内容以空格结尾，同时光标位置后还有空格，则一并替换掉一个空格，避免残留双空格
-      if (result.endsWith(' ') && this.editor?.editor?.getLine && cursorTo && cursorTo.ch !== null) {
-        const lineText = this.editor.editor.getLine(cursorTo.line) || '';
-        if (lineText[cursorTo.ch] === ' ') {
-          cursorTo = { line: cursorTo.line, ch: cursorTo.ch + 1 };
+      // CM6: 使用文档偏移量获取字符
+      if (result.endsWith(' ') && this.editor?.editor?.state && cursorTo !== null) {
+        const { doc } = this.editor.editor.state;
+        const charAtCursor = doc.sliceString(cursorTo, cursorTo + 1);
+        if (charAtCursor === ' ') {
+          cursorTo = cursorTo + 1;
         }
       }
-      // this.cursorTo.ch = this.cursorFrom.ch + result.length;
+      // CM6: replaceRange 使用文档偏移量
       if (result) {
         this.editor.editor.replaceRange(result, cursorFrom, cursorTo);
       }
       // 控制光标左移若干位
+      // CM6: getCursor() 返回文档偏移量
       if (this.optionList[idx].goLeft) {
         const cursor = this.editor.editor.getCursor();
-        this.editor.editor.setCursor(cursor.line, cursor.ch - this.optionList[idx].goLeft);
+        this.editor.editor.setCursor(cursor - this.optionList[idx].goLeft);
       }
       // 控制光标上移若干位
+      // CM6: 需要将偏移量转换为行，然后向上移动
       if (this.optionList[idx].goTop) {
         const cursor = this.editor.editor.getCursor();
-        this.editor.editor.setCursor(cursor.line - this.optionList[idx].goTop, cursor.ch);
+        const { doc } = this.editor.editor.state;
+        const currentLine = doc.lineAt(cursor);
+        const targetLineNumber = Math.max(1, currentLine.number - this.optionList[idx].goTop);
+        const targetLine = doc.line(targetLineNumber);
+        const ch = cursor - currentLine.from;
+        const newPos = targetLine.from + Math.min(ch, targetLine.length);
+        this.editor.editor.setCursor(newPos);
       }
       // 选中某个范围
+      // CM6: setSelection 使用文档偏移量
       if (this.optionList[idx].selection) {
-        const { line } = this.editor.editor.getCursor();
-        const { ch } = this.editor.editor.getCursor();
-        this.editor.editor.setSelection(
-          { line, ch: ch - this.optionList[idx].selection.from },
-          { line, ch: ch - this.optionList[idx].selection.to },
-        );
+        const cursor = this.editor.editor.getCursor();
+        const fromPos = cursor - this.optionList[idx].selection.from;
+        const toPos = cursor - this.optionList[idx].selection.to;
+        this.editor.editor.setSelection(fromPos, toPos);
       }
     }
   }

@@ -79,10 +79,12 @@ const pasteHelper = {
 
   /**
    * 在编辑器中自动选中刚刚粘贴的内容
+   * CM6: currentCursor 和 getCursor() 都是文档偏移量
    */
   setSelection() {
     const end = this.codemirror.getCursor();
     const begin = this.currentCursor;
+    // CM6: setSelection(anchor, head) 使用文档偏移量
     this.codemirror.setSelection(begin, end);
   },
   /**

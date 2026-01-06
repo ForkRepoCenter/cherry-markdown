@@ -58,6 +58,23 @@
     .cm-line {
       font-family: inherit;
     }
+
+    // CM6 选中样式 - 整行高亮效果
+    .cm-selectionLayer {
+      .cm-selectionBackground {
+        background-color: var(--editor-selection-bg) !important;
+      }
+    }
+
+    // 确保选中背景延伸到行尾（整行高亮）
+    &.cm-focused .cm-selectionBackground {
+      background-color: var(--editor-selection-bg) !important;
+    }
+
+    // 非聚焦状态下的选中样式
+    .cm-selectionBackground {
+      background-color: var(--editor-selection-bg) !important;
+    }
   }
 
   &.cherry--no-toolbar {

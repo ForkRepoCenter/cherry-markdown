@@ -16,7 +16,7 @@
 
 // 可选依赖的类型声明
 import { EditorView, ViewUpdate, Rect, BlockInfo } from '@codemirror/view';
-import { EditorState, SelectionRange, TransactionSpec, Transaction } from '@codemirror/state';
+import { EditorState, SelectionRange, TransactionSpec } from '@codemirror/state';
 import Cherry from '../src/Cherry.js';
 import { EditorMode, CherryToolbarsOptions } from './cherry.js';
 declare module '@replit/codemirror-vim' {
@@ -106,8 +106,8 @@ export interface CM6Adapter {
   setValue(value: string): void;
   getSelection(): string;
   getSelections(): string[];
-  replaceSelection(text: string, select?: string): void;
-  replaceSelections(texts: string[], select?: string): void;
+  replaceSelection(text: string, select?: 'around' | 'start'): void;
+  replaceSelections(texts: string[], select?: 'around' | 'start'): void;
 
   // 光标操作（使用文档偏移量）
   getCursor(type?: 'head' | 'anchor'): number;

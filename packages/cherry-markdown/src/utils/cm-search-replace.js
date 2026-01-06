@@ -624,7 +624,8 @@ export default class SearchBox {
       countEle.innerText = `${count} ${this.$cherry.locale.matchesFoundText}`;
     }
     if (count === 0) {
-      cm.setSelection({ ch: 0, line: 0 }, { ch: 0, line: 0 });
+      // CM6: setSelection 使用文档偏移量
+      cm.setSelection(0, 0);
     }
   }
 

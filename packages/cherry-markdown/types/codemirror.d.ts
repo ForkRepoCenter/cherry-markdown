@@ -19,11 +19,5 @@
  * 由于 CM6 使用独立的包，类型定义来自 @codemirror/* 包
  */
 
-// 为 CM6 适配器扩展的类型
-export interface CM6LineBlock {
-  from: number;
-  to: number;
-  top: number;
-  height: number;
-  text: string;
-}
+// CM6 官方类型
+export { BlockInfo } from '@codemirror/view';
