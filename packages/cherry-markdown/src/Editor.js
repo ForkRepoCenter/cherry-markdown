@@ -173,10 +173,8 @@ const cherryHighlighter = tagHighlighter([
  * @property {string} [markId] - 用于追踪 mark 的唯一标识符
  */
 
-// 创建用于动态切换 keymap 的 Compartment
-const keymapCompartment = new Compartment();
-// 创建用于 vim 模式的 Compartment
-const vimCompartment = new Compartment();
+// 注意：keymapCompartment 和 vimCompartment 已移至 Editor 类实例属性中
+// 避免多实例共享导致状态冲突
 
 // vim 模块缓存
 let vimModule = null;
@@ -218,6 +216,10 @@ async function loadVimModule() {
   }
 }
 
+// 缓存语法高亮扩展，避免重复创建
+const cachedCherryHighlighting = syntaxHighlighting(cherryHighlighter);
+const cachedDefaultHighlighting = syntaxHighlighting(defaultHighlightStyle);
+
 // 创建搜索高亮效果 - 用于添加 cm-searching 类
 /** @type {import('@codemirror/state').StateEffectType<import('@codemirror/view').DecorationSet>} */
 const setSearchHighlightEffect = StateEffect.define();
@@ -250,14 +252,17 @@ class CM6Adapter {
   /**
    * 创建 CM6Adapter 实例
    * @param {EditorView} view - EditorView 实例
+   * @param {Compartment} [vimCompartment] - vim 模式的 Compartment（可选，用于多实例隔离）
    */
-  constructor(view) {
+  constructor(view, vimCompartment) {
     /** @type {EditorView} */
     this.view = view;
     /** @type {Map<string, Array<(...args: unknown[]) => void>>} */
     this.eventHandlers = new Map();
     /** @type {'sublime' | 'vim'} */
     this.currentKeyMap = 'sublime';
+    /** @type {Compartment | null} */
+    this.vimCompartment = vimCompartment || null;
   }
 
   // ==================== 代理属性 ====================
@@ -357,13 +362,25 @@ class CM6Adapter {
    * 替换当前选中的文本
    * @param {string} text - 替换文本
    * @param {'around' | 'start'} [select='around'] - 替换后的选区行为
+   *   - 'around': 光标移动到替换文本末尾
+   *   - 'start': 光标移动到替换文本开头
    * @returns {void}
    */
   replaceSelection(text, select = 'around') {
     const { from, to } = this.view.state.selection.main;
+    let selection;
+
+    if (select === 'start') {
+      // 光标移动到替换文本开头
+      selection = { anchor: from };
+    } else {
+      // 'around' 或其他：光标移动到替换文本末尾
+      selection = { anchor: from + text.length };
+    }
+
     this.view.dispatch({
       changes: { from, to, insert: text },
-      selection: select === 'around' ? { anchor: from + text.length } : undefined,
+      selection,
     });
   }
 
@@ -525,12 +542,18 @@ class CM6Adapter {
    * @returns {void}
    */
   scrollTo(x, y) {
-    if (y !== null) {
-      this.view.scrollDOM.scrollTop = y;
-    }
-    if (x !== null) {
-      this.view.scrollDOM.scrollLeft = x;
-    }
+    // 使用 requestMeasure 确保滚动操作与 CM6 状态同步
+    this.view.requestMeasure({
+      read: () => ({ x, y }),
+      write: ({ x: scrollX, y: scrollY }) => {
+        if (scrollY !== null) {
+          this.view.scrollDOM.scrollTop = scrollY;
+        }
+        if (scrollX !== null) {
+          this.view.scrollDOM.scrollLeft = scrollX;
+        }
+      },
+    });
   }
 
   /**
@@ -622,11 +645,16 @@ class CM6Adapter {
    * @returns {Promise<void>}
    */
   async setKeyMap(mode) {
+    if (!this.vimCompartment) {
+      console.warn('vimCompartment not available, cannot switch keyMap');
+      return;
+    }
+
     if (mode === 'vim') {
       try {
         const vimMod = await loadVimModule();
         this.view.dispatch({
-          effects: vimCompartment.reconfigure(vimMod.vim()),
+          effects: this.vimCompartment.reconfigure(vimMod.vim()),
         });
         this.currentKeyMap = 'vim';
       } catch (e) {
@@ -636,7 +664,7 @@ class CM6Adapter {
     } else {
       // sublime 或 default 模式：禁用 vim
       this.view.dispatch({
-        effects: vimCompartment.reconfigure([]),
+        effects: this.vimCompartment.reconfigure([]),
       });
       this.currentKeyMap = 'sublime';
     }
@@ -650,9 +678,10 @@ class CM6Adapter {
   getOption(option) {
     switch (option) {
       case 'readOnly':
-        return this.view.state.readOnly || false;
+        // CM6 中使用 EditorState.readOnly facet 获取只读状态
+        return this.view.state.facet(EditorState.readOnly);
       case 'disableInput':
-        return this.view.state.readOnly || false;
+        return this.view.state.facet(EditorState.readOnly);
       case 'value':
         return this.getValue();
       default:
@@ -742,16 +771,20 @@ class CM6Adapter {
    * @returns {TextMarker} 标记对象
    */
   markText(from, to, options) {
-    // 创建装饰
+    // 生成唯一标识符用于追踪 mark
+    const markId = `mark_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    // 创建装饰时直接包含 markId，避免之后修改不可变对象
     const decoration = options.replacedWith
-      ? Decoration.replace({ widget: new ReplacementWidget(options.replacedWith) })
+      ? Decoration.replace({
+          widget: new ReplacementWidget(options.replacedWith),
+          markId, // 在创建时传入 markId
+        })
       : Decoration.mark({
           class: options.className,
           attributes: options.title ? { title: options.title } : undefined,
+          markId, // 在创建时传入 markId
         });
-
-    // 生成唯一标识符用于追踪 mark
-    const markId = `mark_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 
     // 添加到状态，同时存储原始位置信息和 markId
     this.view.dispatch({
@@ -838,23 +871,28 @@ class CM6Adapter {
       caseSensitive: caseFold === false, // caseFold 为 false 时表示大小写敏感
     });
 
-    let currentPos = pos;
     const { doc } = this.view.state;
+
+    // 创建一次游标并复用，避免每次 findNext 都创建新游标
+    let cursor = searchQuery.getCursor(doc, pos);
 
     // 使用闭包变量存储搜索结果，避免多个搜索游标互相干扰
     /** @type {{ from: number; to: number } | null} */
     let lastSearchResult = null;
 
+    // 当前搜索位置
+    let currentPos = pos;
+
     // 用于向前搜索的辅助函数
     const findPreviousMatch = (/** @type {number} */ fromPos) => {
       // 从文档开始到指定位置查找所有匹配
-      const cursor = searchQuery.getCursor(doc, 0);
+      const prevCursor = searchQuery.getCursor(doc, 0);
       let lastMatch = null;
 
-      let result = cursor.next();
+      let result = prevCursor.next();
       while (!result.done && result.value.from < fromPos) {
         lastMatch = result.value;
-        result = cursor.next();
+        result = prevCursor.next();
       }
 
       return lastMatch;
@@ -862,7 +900,7 @@ class CM6Adapter {
 
     return {
       findNext: () => {
-        const result = searchQuery.getCursor(doc, currentPos).next();
+        const result = cursor.next();
         if (result.done) return false;
 
         currentPos = result.value.to;
@@ -878,6 +916,8 @@ class CM6Adapter {
 
         currentPos = prevMatch.from;
         lastSearchResult = prevMatch;
+        // 重新创建游标从新位置开始，以便后续 findNext 从正确位置继续
+        cursor = searchQuery.getCursor(doc, currentPos);
 
         const matched = doc.sliceString(prevMatch.from, prevMatch.to);
         const matchResult = query instanceof RegExp ? matched.match(query) : [matched];
@@ -946,30 +986,48 @@ class CM6Adapter {
         /** @type {import('@codemirror/view').ViewUpdate} */
         const update = /** @type {import('@codemirror/view').ViewUpdate} */ (args[0]);
         if (update.changes) {
-          update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
-            // 获取事件来源
-            let origin;
-            if (update.transactions.length > 0) {
-              const tr = update.transactions[0];
-              const userEvent = tr.annotation(Transaction.userEvent);
-              if (userEvent) {
-                if (userEvent.includes('input')) origin = '+input';
-                else if (userEvent.includes('delete')) origin = '+delete';
-                else if (userEvent.includes('undo')) origin = 'undo';
-                else if (userEvent.includes('redo')) origin = 'redo';
-              }
+          // 获取事件来源（只需获取一次）
+          let origin;
+          if (update.transactions.length > 0) {
+            const tr = update.transactions[0];
+            const userEvent = tr.annotation(Transaction.userEvent);
+            if (userEvent) {
+              if (userEvent.includes('input')) origin = '+input';
+              else if (userEvent.includes('delete')) origin = '+delete';
+              else if (userEvent.includes('undo')) origin = 'undo';
+              else if (userEvent.includes('redo')) origin = 'redo';
             }
+          }
 
-            const changeObj = {
+          // 收集所有变更，只触发一次 change 事件
+          const changes = [];
+          update.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+            changes.push({
               from: fromA,
               to: toA,
               text: inserted.toString().split('\n'),
               removed: update.startState.doc.sliceString(fromA, toA).split('\n'),
               origin,
-            };
-
-            handlers.forEach((handler) => handler(this, changeObj));
+            });
           });
+
+          // 构建合并的 changeObj，兼容旧的单变更格式
+          const changeObj =
+            changes.length === 1
+              ? changes[0]
+              : {
+                  // 使用第一个变更的位置信息
+                  from: changes[0]?.from ?? 0,
+                  to: changes[changes.length - 1]?.to ?? 0,
+                  text: changes.flatMap((c) => c.text),
+                  removed: changes.flatMap((c) => c.removed),
+                  origin,
+                  // 提供完整的变更列表供需要的场景使用
+                  changes,
+                };
+
+          // 只触发一次 handler
+          handlers.forEach((handler) => handler(this, changeObj));
         }
       } else {
         handlers.forEach((handler) => handler(this, ...args));
@@ -986,7 +1044,13 @@ class ReplacementWidget extends WidgetType {
   }
 
   toDOM() {
-    return this.dom;
+    // 返回克隆节点而非原始节点，避免多次调用时节点被移动
+    return this.dom.cloneNode(true);
+  }
+
+  eq(other) {
+    // 比较 Widget 的 dom 引用是否相同，避免不必要的 DOM 重建
+    return this.dom === other.dom;
   }
 }
 
@@ -1004,12 +1068,8 @@ const markField = StateField.define({
     let updatedMarks = currentMarks.map(tr.changes);
     for (const effect of tr.effects) {
       if (effect.is(addMark) && effect.value) {
-        // 创建带有 markId 的装饰
+        // 创建装饰范围，markId 已在 decoration 创建时包含在 spec 中
         const decoration = effect.value.decoration.range(effect.value.from, effect.value.to);
-        // 在装饰的 spec 中存储 markId
-        if (effect.value.markId) {
-          decoration.value.spec.markId = effect.value.markId;
-        }
         updatedMarks = updatedMarks.update({
           add: [decoration],
         });
@@ -1080,6 +1140,12 @@ export default class Editor {
     /** @type {boolean} */
     this.shortcutDisabled = false;
 
+    // 为每个编辑器实例创建独立的 Compartment，避免多实例共享导致状态冲突
+    /** @type {Compartment} */
+    this.keymapCompartment = new Compartment();
+    /** @type {Compartment} */
+    this.vimCompartment = new Compartment();
+
     const { codemirror, ...restOptions } = options;
     if (codemirror) {
       Object.assign(this.options.codemirror, codemirror);
@@ -1109,12 +1175,12 @@ export default class Editor {
     if (disable) {
       // 禁用快捷键：使用空的 keymap
       view.dispatch({
-        effects: keymapCompartment.reconfigure([]),
+        effects: this.keymapCompartment.reconfigure([]),
       });
     } else {
       // 启用快捷键：恢复默认 keymap
       view.dispatch({
-        effects: keymapCompartment.reconfigure(keymap.of(this.defaultKeymap)),
+        effects: this.keymapCompartment.reconfigure(keymap.of(this.defaultKeymap)),
       });
     }
   };
@@ -1486,6 +1552,9 @@ export default class Editor {
       throw new Error('The specific element is not a textarea.');
     }
 
+    // 保存 this 引用，用于 keymap 回调
+    const self = this;
+
     // 保存默认 keymap 配置
     this.defaultKeymap = [
       ...defaultKeymap,
@@ -1496,8 +1565,9 @@ export default class Editor {
       {
         key: 'Enter',
         run: (view) => {
-          // 调用自动缩进处理
-          const adapter = new CM6Adapter(view);
+          // 复用已有的 adapter 实例，避免每次创建新实例
+          // 如果 editor 尚未初始化，创建临时适配器
+          const adapter = self.editor || new CM6Adapter(view, self.vimCompartment);
           handleNewlineIndentList(adapter);
           return true;
         },
@@ -1506,13 +1576,14 @@ export default class Editor {
 
     // 创建编辑器
     const extensions = [
-      syntaxHighlighting(cherryHighlighter),
+      // 使用缓存的语法高亮扩展，避免重复创建
+      cachedCherryHighlighting,
       // 基础扩展
       markdown(),
       history(),
       search(),
       closeBrackets(),
-      syntaxHighlighting(defaultHighlightStyle),
+      cachedDefaultHighlighting,
 
       // 自定义选中样式 - 实现整行高亮效果
       drawSelection({
@@ -1526,11 +1597,11 @@ export default class Editor {
       // 条件性添加行号
       ...(this.options.codemirror.lineNumbers ? [lineNumbers()] : []),
 
-      // 键盘映射（使用 Compartment 以支持动态切换）
-      keymapCompartment.of(keymap.of(this.defaultKeymap)),
+      // 键盘映射（使用实例级 Compartment 以支持动态切换，避免多实例冲突）
+      this.keymapCompartment.of(keymap.of(this.defaultKeymap)),
 
-      // Vim 模式（使用 Compartment 以支持动态切换）
-      vimCompartment.of([]),
+      // Vim 模式（使用实例级 Compartment 以支持动态切换，避免多实例冲突）
+      this.vimCompartment.of([]),
 
       // 自动换行
       EditorView.lineWrapping,
@@ -1548,8 +1619,9 @@ export default class Editor {
         if (!adapter) return;
 
         if (update.docChanged) {
-          adapter.emit('change', update);
+          // 修复事件顺序：beforeChange 应该在 change 之前触发
           adapter.emit('beforeChange', adapter);
+          adapter.emit('change', update);
         }
         if (update.selectionSet) {
           // 触发 beforeSelectionChange 事件,供 FloatMenu 和 Bubble 使用
@@ -1632,17 +1704,23 @@ export default class Editor {
       extensions,
     });
 
+    // 检查 parent 元素是否存在
+    const { parentElement } = textArea;
+    if (!parentElement) {
+      throw new Error('Cannot create EditorView: textarea has no parent element');
+    }
+
     // 创建视图
     const view = new EditorView({
       state,
-      parent: textArea.parentElement,
+      parent: parentElement,
     });
 
     // 隐藏原始 textarea
     textArea.style.display = 'none';
 
-    // 创建适配器
-    const editor = new CM6Adapter(view);
+    // 创建适配器，传入实例级别的 vimCompartment
+    const editor = new CM6Adapter(view, this.vimCompartment);
     this.previewer = previewer;
     this.editor = editor;
 

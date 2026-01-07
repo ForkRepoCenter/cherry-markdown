@@ -86,6 +86,10 @@ export interface CM6Adapter {
   view: EditorView;
   /** 事件处理器映射 */
   eventHandlers: Map<string, Array<(...args: unknown[]) => void>>;
+  /** 当前键盘映射模式 */
+  currentKeyMap: 'sublime' | 'vim';
+  /** vim 模式的 Compartment（用于多实例隔离） */
+  vimCompartment: import('@codemirror/state').Compartment | null;
 
   // 代理属性 - 直接访问底层 EditorView 的属性
   /** 代理到 view.state */
@@ -165,11 +169,23 @@ export interface CM6Adapter {
   emit(event: string, ...args: unknown[]): void;
 }
 
+/** 变更对象类型 */
+export interface ChangeObject {
+  from: number;
+  to: number;
+  text: string[];
+  removed: string[];
+  origin?: string;
+  /** 当有多个变更时，包含完整的变更列表 */
+  changes?: ChangeObject[];
+}
+
 /** CM6Adapter 内部事件映射 */
 interface CM6AdapterEventMap {
   blur: (event: Event) => void;
   focus: (event: Event) => void;
-  change: () => void;
+  /** change 事件现在传递 adapter 实例和变更对象 */
+  change: (adapter: CM6Adapter, changeObj: ChangeObject) => void;
   scroll: () => void;
   paste: (event: ClipboardEvent) => void;
   mousedown: (event: MouseEvent) => void;

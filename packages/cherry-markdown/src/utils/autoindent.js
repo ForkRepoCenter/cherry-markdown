@@ -31,29 +31,36 @@ function handleCherryList(cm) {
   // CodeMirror 6: 检查是否只读
   if (cm.getOption('readOnly')) return false;
   const ranges = cm.listSelections();
-  const replacements = [];
   const { doc } = cm.state;
 
+  // 先检查所有选区是否都符合条件
   for (let i = 0; i < ranges.length; i++) {
     const range = ranges[i];
-    // CM6: head 是文档偏移量，需要转换为行信息
     const headPos = range.head;
     const lineObj = doc.lineAt(headPos);
-    const lineNumber = lineObj.number; // 1-indexed
-    const ch = headPos - lineObj.from; // 光标在行内的位置
+    const ch = headPos - lineObj.from;
     const lineText = lineObj.text;
 
     const match = cherryListRE.exec(lineText);
     const cursorBeforeBullet = /^\s*$/.test(lineText.slice(0, ch));
 
-    // CM6: 使用 from === to 判断是否为空选区
+    // 如果任一选区不符合条件，直接返回 false
     if (range.from !== range.to || cursorBeforeBullet || !match) return false;
+  }
+
+  // 所有选区都符合条件，收集替换内容
+  const replacements = [];
+  for (let i = 0; i < ranges.length; i++) {
+    const range = ranges[i];
+    const headPos = range.head;
+    const lineObj = doc.lineAt(headPos);
+    const lineText = lineObj.text;
+    const match = cherryListRE.exec(lineText);
 
     if (cherryListEmptyRE.test(lineText)) {
-      // CM6: replaceRange 使用文档偏移量
-      const fromPos = lineObj.from;
-      const toPos = Math.min(headPos + 1, doc.length);
-      cm.replaceRange('', fromPos, toPos);
+      // 空列表项：删除整行并插入换行
+      // 使用 replaceRange 删除从行首到光标位置的内容
+      cm.replaceRange('', lineObj.from, headPos);
       replacements[i] = '\n';
     } else {
       const indent = match[1];
@@ -61,6 +68,11 @@ function handleCherryList(cm) {
       replacements[i] = `\n${indent}I.${after}`;
     }
   }
-  cm.replaceSelections(replacements);
+
+  // 只有非空列表项才需要 replaceSelections
+  const hasNonEmptyReplacement = replacements.some((r) => r !== '\n');
+  if (hasNonEmptyReplacement) {
+    cm.replaceSelections(replacements);
+  }
   return true;
 }
